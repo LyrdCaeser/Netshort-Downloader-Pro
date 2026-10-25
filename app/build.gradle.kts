@@ -1,4 +1,3 @@
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -46,4 +45,11 @@ dependencies {
     implementation("androidx.compose.ui:ui-graphics")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
+    
+    // Thư viện Icon mở rộng (khắc phục lỗi Unresolved reference: Download / Link)
+    implementation("androidx.compose.material:material-icons-extended")
+    
+    // OkHttp và Coroutines để gọi mạng và bóc tách link
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3")
 }
