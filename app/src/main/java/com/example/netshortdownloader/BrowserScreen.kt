@@ -1,6 +1,7 @@
 package com.example.netshortdownloader
 
 import android.annotation.SuppressLint
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -9,6 +10,8 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowForward
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -16,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -23,10 +27,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 @Composable
 fun BrowserScreen(
     initialUrl: String,
-    onBack: () -> Unit
+    onBack: () -> Unit // Hàm đóng trình duyệt
 ) {
     val context = LocalContext.current
-    // Trạng thái lưu trữ URL hiện tại trên thanh địa chỉ
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
 
@@ -34,13 +37,27 @@ fun BrowserScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Trình duyệt bắt link (F12)") },
+                    title = { Text("Trình duyệt (F12)", fontSize = 18.sp) },
                     navigationIcon = {
+                        // Nút thoát trình duyệt hoàn toàn (Dấu X)
                         IconButton(onClick = onBack) {
-                            Icon(Icons.Default.ArrowBack, contentDescription = "Quay lại")
+                            Icon(Icons.Default.Close, contentDescription = "Đóng")
                         }
                     },
                     actions = {
+                        // Nút Lùi 1 trang web
+                        IconButton(onClick = { 
+                            if (webViewRef?.canGoBack() == true) webViewRef?.goBack() 
+                        }) {
+                            Icon(Icons.Default.ArrowBack, contentDescription = "Lùi lại")
+                        }
+                        // Nút Tiến 1 trang web
+                        IconButton(onClick = { 
+                            if (webViewRef?.canGoForward() == true) webViewRef?.goForward() 
+                        }) {
+                            Icon(Icons.Default.ArrowForward, contentDescription = "Tiến tới")
+                        }
+                        // Nút Tải lại (Refresh)
                         IconButton(onClick = { webViewRef?.reload() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Tải lại")
                         }
@@ -50,7 +67,6 @@ fun BrowserScreen(
                     )
                 )
                 
-                // Thanh nhập địa chỉ URL (Address Bar)
                 OutlinedTextField(
                     value = currentUrl,
                     onValueChange = { currentUrl = it },
@@ -63,7 +79,6 @@ fun BrowserScreen(
                     keyboardActions = KeyboardActions(
                         onGo = {
                             var loadUrl = currentUrl
-                            // Tự động thêm https:// nếu bạn gõ thiếu
                             if (!loadUrl.startsWith("http://") && !loadUrl.startsWith("https://")) {
                                 loadUrl = "https://$loadUrl"
                                 currentUrl = loadUrl
@@ -84,19 +99,22 @@ fun BrowserScreen(
                     webViewRef = this
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
                     
-                    // Giả mạo Chrome thật để bypass Cloudflare/Google
-                    val defaultAgent = settings.userAgentString
-                    settings.userAgentString = defaultAgent.replace("; wv", "")
+                    // BẬT COOKIE BÊN THỨ 3: Rất quan trọng để Google Login không bị lỗi
+                    CookieManager.getInstance().setAcceptCookie(true)
+                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    
+                    // LỚP NGỤY TRANG CHROME: Giả mạo 100% là trình duyệt Chrome trên Samsung S23
+                    val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
+                    settings.userAgentString = chromeUserAgent
                     
                     webChromeClient = WebChromeClient()
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView, url: String) {
                             super.onPageFinished(view, url)
-                            // Đồng bộ lại URL trên thanh địa chỉ nếu web tự động chuyển hướng (redirect)
                             currentUrl = url 
                             
-                            // Tiêm F12 (Eruda) ngay khi trang vừa tải xong
                             val injectEruda = """
                                 javascript:(function () { 
                                     if (window.eruda) return;
