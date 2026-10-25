@@ -1,6 +1,7 @@
 package com.example.netshortdownloader
 
 import android.annotation.SuppressLint
+import android.os.Message
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebView
@@ -12,6 +13,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -27,7 +29,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 @Composable
 fun BrowserScreen(
     initialUrl: String,
-    onBack: () -> Unit // Hàm đóng trình duyệt
+    onBack: () -> Unit
 ) {
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
@@ -39,25 +41,19 @@ fun BrowserScreen(
                 TopAppBar(
                     title = { Text("Trình duyệt (F12)", fontSize = 18.sp) },
                     navigationIcon = {
-                        // Nút thoát trình duyệt hoàn toàn (Dấu X)
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.Default.Close, contentDescription = "Đóng")
-                        }
+                        IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                     },
                     actions = {
-                        // Nút Lùi 1 trang web
-                        IconButton(onClick = { 
-                            if (webViewRef?.canGoBack() == true) webViewRef?.goBack() 
-                        }) {
+                        // Nút Home (Trang chủ) - Cứu cánh khi bị kẹt trang trắng
+                        IconButton(onClick = { webViewRef?.loadUrl("https://google.com") }) {
+                            Icon(Icons.Default.Home, contentDescription = "Trang chủ")
+                        }
+                        IconButton(onClick = { if (webViewRef?.canGoBack() == true) webViewRef?.goBack() }) {
                             Icon(Icons.Default.ArrowBack, contentDescription = "Lùi lại")
                         }
-                        // Nút Tiến 1 trang web
-                        IconButton(onClick = { 
-                            if (webViewRef?.canGoForward() == true) webViewRef?.goForward() 
-                        }) {
+                        IconButton(onClick = { if (webViewRef?.canGoForward() == true) webViewRef?.goForward() }) {
                             Icon(Icons.Default.ArrowForward, contentDescription = "Tiến tới")
                         }
-                        // Nút Tải lại (Refresh)
                         IconButton(onClick = { webViewRef?.reload() }) {
                             Icon(Icons.Default.Refresh, contentDescription = "Tải lại")
                         }
@@ -101,19 +97,48 @@ fun BrowserScreen(
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
                     
-                    // BẬT COOKIE BÊN THỨ 3: Rất quan trọng để Google Login không bị lỗi
+                    // Cấp phép cho WebView mở đa cửa sổ (Popup) y như Chrome
+                    settings.setSupportMultipleWindows(true)
+                    settings.javaScriptCanOpenWindowsAutomatically = true
+                    
                     CookieManager.getInstance().setAcceptCookie(true)
                     CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
                     
-                    // LỚP NGỤY TRANG CHROME: Giả mạo 100% là trình duyệt Chrome trên Samsung S23
                     val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
                     settings.userAgentString = chromeUserAgent
                     
-                    webChromeClient = WebChromeClient()
+                    webChromeClient = object : WebChromeClient() {
+                        // Xử lý luồng mở Tab mới của Google Login
+                        override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+                            val newWebView = WebView(context).apply {
+                                settings.javaScriptEnabled = true
+                                settings.userAgentString = chromeUserAgent
+                                webViewClient = object : WebViewClient() {
+                                    override fun onPageFinished(view: WebView, url: String) {
+                                        // Nếu popup đi đến trang transform, tự động đóng nó lại và tải lại web chính
+                                        if (url.contains("gsi/transform") || url.contains("close")) {
+                                            webViewRef?.loadUrl("https://google.com")
+                                        }
+                                    }
+                                }
+                            }
+                            val transport = resultMsg?.obj as WebView.WebViewTransport
+                            transport.webView = newWebView
+                            resultMsg.sendToTarget()
+                            return true
+                        }
+                    }
+                    
                     webViewClient = object : WebViewClient() {
                         override fun onPageFinished(view: WebView, url: String) {
                             super.onPageFinished(view, url)
                             currentUrl = url 
+                            
+                            // Cơ chế tự động bẻ lái dự phòng
+                            if (url.contains("gsi/transform")) {
+                                loadUrl("https://google.com")
+                                return
+                            }
                             
                             val injectEruda = """
                                 javascript:(function () { 
