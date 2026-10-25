@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">NetShort Downloader</string>
+    <string name="url_hint">Dán link phim VIP vào đây...</string>
+    <string name="btn_download">Tải Phim Ngay</string>
+</resources>

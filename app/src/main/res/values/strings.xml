@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">NetShort Downloader</string>
+    <string name="url_hint">Paste video link here...</string>
+    <string name="btn_download">Download</string>
+</resources>
