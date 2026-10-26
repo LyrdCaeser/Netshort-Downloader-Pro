@@ -56,7 +56,6 @@ fun NetShortDownloaderScreen() {
     var refererUrl by remember { mutableStateOf("") }
     var selectedMediaUrl by remember { mutableStateOf("") }
     var downloadedMediaUrls by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var nextEpisodeSignal by remember { mutableStateOf(0) }
     var showLogin by remember { mutableStateOf(false) }
     var showBrowser by remember { mutableStateOf(false) }
     var sessionReady by remember { mutableStateOf(hasNetShortSession()) }
@@ -64,7 +63,7 @@ fun NetShortDownloaderScreen() {
     var statusText by remember { mutableStateOf("") }
     var progressPercent by remember { mutableStateOf(0) }
 
-    fun startDownload(mediaUrl: String, pageUrl: String, advanceAfterSave: Boolean) {
+    fun startDownload(mediaUrl: String, pageUrl: String, fromBrowser: Boolean) {
         if (isDownloading || mediaUrl.isBlank()) return
         val mediaUrlToDownload = mediaUrl.trim()
         isDownloading = true
@@ -80,11 +79,10 @@ fun NetShortDownloaderScreen() {
                     downloadedMediaUrls = downloadedMediaUrls + mediaUrlToDownload
                     urlInput = ""
                     selectedMediaUrl = ""
-                    if (advanceAfterSave) {
+                    if (fromBrowser) {
                         refererUrl = pageUrl
-                        statusText = "Đã lưu video. Đang tìm nút chuyển tập tiếp theo…"
+                        statusText = "Đã lưu video. Trang NetShort vẫn mở; hãy bấm chọn tập tiếp theo trên trang. Link tập vừa tải đã được bỏ khỏi danh sách."
                         progressPercent = 0
-                        nextEpisodeSignal += 1
                     } else {
                         refererUrl = ""
                     }
@@ -115,7 +113,6 @@ fun NetShortDownloaderScreen() {
             isDownloading = isDownloading,
             downloadStatus = statusText,
             downloadPercent = progressPercent,
-            nextEpisodeSignal = nextEpisodeSignal,
             onBack = {
                 if (!isDownloading) {
                     showBrowser = false
@@ -130,19 +127,7 @@ fun NetShortDownloaderScreen() {
                 progressPercent = 0
                 Toast.makeText(context, "Đã chọn link. Nhấn Tải & chuyển tập để tải video.", Toast.LENGTH_SHORT).show()
             },
-            onDownloadSelected = { startDownload(selectedMediaUrl, refererUrl, advanceAfterSave = true) },
-            onNextEpisodeResult = { moved ->
-                statusText = if (moved) {
-                    "Đã nhấn nút tập tiếp theo. Đang chờ NetShort cập nhật và quét link mới…"
-                } else {
-                    "Đã lưu video; không tìm thấy nút chuyển tập tự động. Hãy chọn tập kế tiếp trên NetShort."
-                }
-                if (moved) {
-                    Toast.makeText(context, "Đã nhấn nút tập tiếp theo.", Toast.LENGTH_SHORT).show()
-                } else {
-                    Toast.makeText(context, "Không tìm thấy nút tập tiếp theo; trang NetShort vẫn được giữ nguyên.", Toast.LENGTH_LONG).show()
-                }
-            }
+            onDownloadSelected = { startDownload(selectedMediaUrl, refererUrl, fromBrowser = true) }
         )
     } else {
         Scaffold(
@@ -207,7 +192,7 @@ fun NetShortDownloaderScreen() {
                             Toast.makeText(context, "Hãy nhập link video trực tiếp hoặc bắt link trong môi trường NetShort.", Toast.LENGTH_LONG).show()
                             return@Button
                         }
-                        startDownload(urlInput, refererUrl, advanceAfterSave = false)
+                        startDownload(urlInput, refererUrl, fromBrowser = false)
                     },
                     modifier = Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(16.dp)),
                     enabled = !isDownloading

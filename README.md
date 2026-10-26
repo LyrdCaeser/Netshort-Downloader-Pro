@@ -8,7 +8,7 @@
 - Tên cookie chỉ được dùng làm dấu hiệu tham khảo, không chứng minh tài khoản đã đăng nhập. Nếu NetShort dùng cookie phiên opaque, người dùng có thể xác nhận thủ công sau khi tự kiểm tra trạng thái trên trang.
 - Môi trường duyệt NetShort cô lập trong app. Điều hướng trang chỉ cho phép `netshort.com` và một danh sách nhỏ host đăng nhập liên kết như Google, Apple và Facebook. Đây là WebView trong app, **không phải máy ảo Android/AVD**.
 - Radar nhiều tín hiệu: HTML5 `<video>/<source>`, Fetch, XHR, MIME video, tài nguyên WebView và liên kết tải do WebView báo. Các link tìm được hiển thị để người dùng chọn; app không tự động tải link đầu tiên.
-- Tải ngay trong WebView đang mở. Sau khi file được lưu thành công, app xóa link vừa tải, thử nhấn nút “Next episode” trên giao diện NetShort và tiếp tục quét tập mới mà không chủ động tải lại trang. Nếu không nhận diện được nút Next, người dùng có thể chọn tập thủ công trên trang hiện tại.
+- Tải ngay trong WebView đang mở. Sau khi file được lưu thành công, app xóa link vừa tải khỏi danh sách và giữ nguyên trang/player để người dùng tự chạm chọn tập tiếp theo; app không tự click nút trang để tránh điều hướng nhầm.
 - Tải file video trực tiếp HTTPS (`mp4`, `m4v`, `webm`, `mov`) sau khi kiểm tra HTTP status và MIME. Android 10 trở lên lưu tại `Downloads/NetShort`; Android cũ hơn lưu vào thư mục Downloads riêng của ứng dụng.
 
 ## Giới hạn
