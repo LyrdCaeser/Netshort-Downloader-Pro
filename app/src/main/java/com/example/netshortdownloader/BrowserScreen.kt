@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
 fun BrowserScreen(
     initialUrl: String,
     onBack: () -> Unit,
-    onLinkCaught: (String) -> Unit // Callback để trả link về màn hình chính
+    onLinkCaught: (String) -> Unit
 ) {
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
@@ -49,7 +49,7 @@ fun BrowserScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Radar bắt link Tự Động", fontSize = 18.sp) },
+                    title = { Text("Radar Tự Động & F12", fontSize = 18.sp) },
                     navigationIcon = {
                         IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                     },
@@ -101,6 +101,7 @@ fun BrowserScreen(
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
+                    
                     settings.setSupportMultipleWindows(true)
                     settings.javaScriptCanOpenWindowsAutomatically = true
                     
@@ -111,13 +112,12 @@ fun BrowserScreen(
                     val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
                     settings.userAgentString = chromeUserAgent
 
-                    // Cầu nối giao tiếp giữa JavaScript (Web) và Kotlin (App)
                     addJavascriptInterface(object {
                         @JavascriptInterface
                         fun onVideoFound(url: String) {
                             CoroutineScope(Dispatchers.Main).launch {
                                 Toast.makeText(context, "BẮT ĐƯỢC LINK VIP!", Toast.LENGTH_SHORT).show()
-                                onLinkCaught(url) // Trả link về giao diện tải
+                                onLinkCaught(url)
                             }
                         }
                     }, "AndroidSniffer")
@@ -161,9 +161,24 @@ fun BrowserScreen(
                             super.onPageFinished(view, url)
                             currentUrl = url 
                             
-                            // ĐOẠN SCRIPT RADAR: Cài cắm vào Fetch và XHR để nghe lén API lấy link
-                            val injectSniffer = """
+                            // Phục hồi cơ chế bẻ lái dự phòng Google Login
+                            if (url.contains("gsi/transform") || url.contains("accounts.google.com/gsi")) {
+                                loadUrl("https://google.com")
+                                return
+                            }
+                            
+                            // Gộp cả 2: F12 Eruda + Radar bắt link
+                            val injectScript = """
                                 javascript:(function() {
+                                    // 1. Tiêm F12 (Eruda)
+                                    if (!window.eruda) {
+                                        var script = document.createElement('script'); 
+                                        script.src = 'https://cdn.jsdelivr.net/npm/eruda'; 
+                                        document.body.appendChild(script); 
+                                        script.onload = function () { eruda.init(); }
+                                    }
+
+                                    // 2. Tiêm Radar nghe lén API
                                     if (window.hasInjectedSniffer) return;
                                     window.hasInjectedSniffer = true;
 
@@ -179,7 +194,6 @@ fun BrowserScreen(
                                         if (match) sendToAndroid(match[1]);
                                     }
 
-                                    // Nghe lén Fetch API
                                     const originalFetch = window.fetch;
                                     window.fetch = async function() {
                                         const response = await originalFetch.apply(this, arguments);
@@ -194,7 +208,6 @@ fun BrowserScreen(
                                         return response;
                                     };
 
-                                    // Nghe lén XMLHttpRequest
                                     const originalXhrOpen = XMLHttpRequest.prototype.open;
                                     XMLHttpRequest.prototype.open = function(method, reqUrl) {
                                         this.addEventListener('load', function() {
@@ -210,7 +223,7 @@ fun BrowserScreen(
                                     };
                                 })();
                             """.trimIndent()
-                            view.evaluateJavascript(injectSniffer, null)
+                            view.evaluateJavascript(injectScript, null)
                         }
                     }
                     
