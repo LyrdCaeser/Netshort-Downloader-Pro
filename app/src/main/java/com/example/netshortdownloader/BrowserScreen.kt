@@ -5,6 +5,7 @@ import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.Message
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -190,7 +191,10 @@ fun BrowserScreen(
                         settings.allowFileAccess = false
                         settings.allowContentAccess = false
                         settings.javaScriptCanOpenWindowsAutomatically = true
-                        settings.setSupportMultipleWindows(false)
+                        // NetShort dùng một số liên kết target="_blank"/window.open
+                        // cho nút "Toàn tập". Cho phép WebView tạo cửa sổ tạm rồi
+                        // chuyển URL hợp lệ về WebView chính thay vì bỏ qua click.
+                        settings.setSupportMultipleWindows(true)
                         settings.mixedContentMode = android.webkit.WebSettings.MIXED_CONTENT_NEVER_ALLOW
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                             settings.safeBrowsingEnabled = true
@@ -220,7 +224,57 @@ fun BrowserScreen(
                         }
                         addJavascriptInterface(mediaBridge, "NetShortMediaCapture")
 
-                        webChromeClient = WebChromeClient()
+                        webChromeClient = object : WebChromeClient() {
+                            override fun onCreateWindow(
+                                view: WebView,
+                                isDialog: Boolean,
+                                isUserGesture: Boolean,
+                                resultMsg: Message
+                            ): Boolean {
+                                if (!isUserGesture) return false
+
+                                lateinit var popup: WebView
+                                popup = WebView(context).apply {
+                                    settings.javaScriptEnabled = true
+                                    settings.domStorageEnabled = true
+                                    settings.javaScriptCanOpenWindowsAutomatically = true
+                                    settings.setSupportMultipleWindows(false)
+                                    webViewClient = object : WebViewClient() {
+                                        private fun forward(url: String?): Boolean {
+                                            val normalized = url?.let(::normalizeNetShortUrl) ?: return false
+                                            mainHandler.post {
+                                                currentUrl = normalized
+                                                candidates.clear()
+                                                webViewRef?.loadUrl(normalized)
+                                                popup.destroy()
+                                            }
+                                            return true
+                                        }
+
+                                        override fun onPageStarted(
+                                            popupView: WebView,
+                                            url: String,
+                                            favicon: android.graphics.Bitmap?
+                                        ) {
+                                            // about:blank is the initial popup document;
+                                            // only forward the actual NetShort destination.
+                                            if (url != "about:blank") forward(url)
+                                            super.onPageStarted(popupView, url, favicon)
+                                        }
+
+                                        override fun shouldOverrideUrlLoading(
+                                            popupView: WebView?,
+                                            request: WebResourceRequest?
+                                        ): Boolean = forward(request?.url?.toString())
+                                    }
+                                }
+
+                                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                                transport.webView = popup
+                                resultMsg.sendToTarget()
+                                return true
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
                             override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
                                 val isTrusted = isNetShortHost(Uri.parse(url).host)
