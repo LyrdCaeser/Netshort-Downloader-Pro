@@ -30,8 +30,8 @@ class DownloadHelper(private val context: Context) {
         mediaUrl: String,
         referer: String,
         onProgress: (status: String, percent: Int) -> Unit
-    ) {
-        withContext(Dispatchers.IO) {
+    ): Boolean {
+        return withContext(Dispatchers.IO) {
             var savedUri: Uri? = null
             var pendingFile: File? = null
             try {
@@ -149,12 +149,14 @@ class DownloadHelper(private val context: Context) {
                         onProgress("Đã lưu $fileName trong $destination", 100)
                     }
                 }
+                true
             } catch (error: Exception) {
                 if (error is CancellationException) throw error
                 savedUri?.let { runCatching { context.contentResolver.delete(it, null, null) } }
                 pendingFile?.let { runCatching { it.delete() } }
                 val message = error.message ?: "Lỗi tải video không xác định."
                 withContext(Dispatchers.Main) { onProgress("Không tải được: $message", 0) }
+                false
             }
         }
     }

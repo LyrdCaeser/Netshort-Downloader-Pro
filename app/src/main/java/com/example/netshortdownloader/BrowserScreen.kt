@@ -14,6 +14,8 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import org.json.JSONObject
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -40,6 +42,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -47,6 +50,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -59,6 +64,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
 
 private data class MediaLinkCandidate(
     val url: String,
@@ -72,20 +78,94 @@ private data class MediaLinkCandidate(
 @Composable
 fun BrowserScreen(
     initialUrl: String,
+    excludedMediaUrls: Set<String> = emptySet(),
+    selectedMediaUrl: String = "",
+    isDownloading: Boolean = false,
+    downloadStatus: String = "",
+    downloadPercent: Int = 0,
+    nextEpisodeSignal: Int = 0,
     onBack: () -> Unit,
-    onLinkCaught: (String, String) -> Unit
+    onLinkCaught: (String, String) -> Unit,
+    onDownloadSelected: () -> Unit = {},
+    onNextEpisodeResult: (Boolean) -> Unit = {}
 ) {
     val context = LocalContext.current
     val defaultUrl = remember(initialUrl) { normalizeNetShortUrl(initialUrl) ?: "https://www.netshort.com/" }
     var currentUrl by remember { mutableStateOf(defaultUrl) }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    var handledNextEpisodeSignal by remember { mutableStateOf(nextEpisodeSignal) }
     val candidates = remember { mutableStateListOf<MediaLinkCandidate>() }
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
     val trustedNetShortDocument = remember { AtomicBoolean(false) }
+    val mediaCaptureSuppressedUntilMs = remember { AtomicLong(0L) }
+    val excludedMediaUrlsRef = remember { AtomicReference(excludedMediaUrls) }
+    val observedPageUrl = remember { AtomicReference(defaultUrl) }
+
+    SideEffect { excludedMediaUrlsRef.set(excludedMediaUrls) }
+
+    LaunchedEffect(excludedMediaUrls, nextEpisodeSignal) {
+        candidates.removeAll { it.url in excludedMediaUrls }
+        if (nextEpisodeSignal == handledNextEpisodeSignal) return@LaunchedEffect
+        handledNextEpisodeSignal = nextEpisodeSignal
+        candidates.clear()
+        delay(500)
+        val activeWebView = webViewRef
+        if (activeWebView == null) {
+            onNextEpisodeResult(false)
+            return@LaunchedEffect
+        }
+        mediaCaptureSuppressedUntilMs.set(System.currentTimeMillis() + 3_000L)
+        val script = """
+            (function() {
+              var all = Array.prototype.slice.call(document.querySelectorAll('button,a,[role="button"],[aria-label],[title]'));
+              function visible(node) {
+                var rect = node.getBoundingClientRect();
+                var style = window.getComputedStyle(node);
+                return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' &&
+                  !node.disabled && node.getAttribute('aria-disabled') !== 'true';
+              }
+              function label(node) {
+                return [node.innerText, node.getAttribute('aria-label'), node.getAttribute('title'), node.getAttribute('data-testid')]
+                  .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim().toLowerCase();
+              }
+              function inPlayer(node) {
+                for (var parent = node, depth = 0; parent && parent !== document.body && depth < 7; parent = parent.parentElement, depth++) {
+                  var marker = [parent.id, parent.className, parent.getAttribute('data-testid')].join(' ').toLowerCase();
+                  if (/(player|episode|video|playback|watch)/.test(marker)) return true;
+                }
+                return false;
+              }
+              var phrase = /(next[\s_-]*(episode|ep|video)|episode[\s_-]*next|tập\s*(tiếp theo|kế tiếp|sau)|下一集|下集|下一话|下一話|siguiente episodio)/i;
+              var target = all.find(function(node) { return visible(node) && inPlayer(node) && phrase.test(label(node)); });
+              if (!target) target = all.find(function(node) { return visible(node) && phrase.test(label(node)); });
+              if (!target) target = all.find(function(node) {
+                var text = label(node);
+                return visible(node) && inPlayer(node) && (/^(next\s*)+$/.test(text) || /^(>|›|»|→)$/.test(text));
+              });
+              if (!target) {
+                var named = Array.prototype.slice.call(document.querySelectorAll('[class*="next" i],[id*="next" i],[data-testid*="next" i]'));
+                target = named.find(function(node) { return visible(node) && inPlayer(node); });
+              }
+              if (!target) return false;
+              target.click();
+              setTimeout(function() {
+                if (window.NetShortMediaCapture && window.NetShortMediaCapture.onPageChanged) {
+                  window.NetShortMediaCapture.onPageChanged(location.href);
+                }
+              }, 250);
+              return true;
+            })();
+        """.trimIndent()
+        activeWebView.evaluateJavascript(script) { result ->
+            onNextEpisodeResult(result?.trim() == "true")
+        }
+    }
 
     fun addCandidate(url: String?, mimeType: String?, source: String?, title: String?) {
         if (!trustedNetShortDocument.get()) return
+        if (System.currentTimeMillis() < mediaCaptureSuppressedUntilMs.get()) return
         val value = url?.trim()?.takeIf { it.startsWith("https://", ignoreCase = true) } ?: return
+        if (value in excludedMediaUrlsRef.get()) return
         val type = mimeType.orEmpty().substringBefore(';').trim().lowercase()
         val path = runCatching { Uri.parse(value).path.orEmpty().lowercase() }.getOrDefault("")
         val isMedia = path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".webm") ||
@@ -128,7 +208,7 @@ fun BrowserScreen(
                         }
                     },
                     navigationIcon = {
-                        IconButton(onClick = onBack) {
+                        IconButton(onClick = onBack, enabled = !isDownloading) {
                             Icon(Icons.Default.Close, contentDescription = "Đóng")
                         }
                     },
@@ -191,6 +271,18 @@ fun BrowserScreen(
                             fun onMediaFound(url: String, mimeType: String, source: String, title: String) {
                                 if (trustedNetShortDocument.get()) addCandidate(url, mimeType, source, title)
                             }
+
+                            @JavascriptInterface
+                            fun onPageChanged(url: String) {
+                                if (!trustedNetShortDocument.get()) return
+                                val normalized = normalizeNetShortUrl(url) ?: return
+                                if (observedPageUrl.getAndSet(normalized) != normalized) {
+                                    mainHandler.post {
+                                        currentUrl = normalized
+                                        candidates.clear()
+                                    }
+                                }
+                            }
                         }
                         addJavascriptInterface(mediaBridge, "NetShortMediaCapture")
 
@@ -214,8 +306,10 @@ fun BrowserScreen(
 
                             override fun onPageFinished(view: WebView, url: String) {
                                 super.onPageFinished(view, url)
-                                if (isNetShortHost(Uri.parse(url).host)) {
-                                    currentUrl = url
+                                val normalized = normalizeNetShortUrl(url)
+                                if (normalized != null) {
+                                    if (observedPageUrl.getAndSet(normalized) != normalized) candidates.clear()
+                                    currentUrl = normalized
                                     installMediaCapture(view, view.title.orEmpty())
                                 }
                             }
@@ -242,6 +336,15 @@ fun BrowserScreen(
                 },
                 update = { webView -> webViewRef = webView }
             )
+
+            if (downloadStatus.isNotBlank() && selectedMediaUrl.isBlank()) {
+                Text(
+                    text = downloadStatus,
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 6.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
 
             if (candidates.isNotEmpty()) {
                 Text(
@@ -270,7 +373,7 @@ fun BrowserScreen(
                                 }
                                 Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                                     Text(item.detectionSource, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
-                                    Button(onClick = { onLinkCaught(item.url, currentUrl) }) {
+                                    Button(onClick = { onLinkCaught(item.url, currentUrl) }, enabled = !isDownloading) {
                                         Text("Dùng link")
                                     }
                                 }
@@ -285,6 +388,34 @@ fun BrowserScreen(
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
                     style = MaterialTheme.typography.bodySmall
                 )
+            }
+
+            if (selectedMediaUrl.isNotBlank()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(12.dp)) {
+                        Text("Sẵn sàng tải tập này", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                        Text(selectedMediaUrl, maxLines = 2, style = MaterialTheme.typography.bodySmall)
+                        if (downloadStatus.isNotBlank()) {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(downloadStatus, style = MaterialTheme.typography.bodySmall)
+                        }
+                        if (isDownloading) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            LinearProgressIndicator(
+                                progress = downloadPercent / 100f,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                            Button(onClick = onDownloadSelected, enabled = !isDownloading) {
+                                Text(if (isDownloading) "Đang tải…" else "Tải & chuyển tập")
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -340,6 +471,9 @@ private fun installMediaCapture(view: WebView, title: String) {
             }
           }
           function scanDom() {
+            if (window.NetShortMediaCapture && window.NetShortMediaCapture.onPageChanged) {
+              window.NetShortMediaCapture.onPageChanged(location.href);
+            }
             document.querySelectorAll('video').forEach(function(video) {
               send(video.currentSrc || video.src, 'video/*', 'HTML5 video');
               video.querySelectorAll('source').forEach(function(source) { send(source.src, source.type || 'video/*', 'HTML5 source'); });
