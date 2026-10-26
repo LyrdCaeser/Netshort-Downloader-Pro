@@ -3,10 +3,12 @@ package com.example.netshortdownloader
 import android.annotation.SuppressLint
 import android.os.Message
 import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -26,13 +28,17 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun BrowserScreen(
     initialUrl: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onLinkCaught: (String) -> Unit // Callback để trả link về màn hình chính
 ) {
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
@@ -43,7 +49,7 @@ fun BrowserScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Trình duyệt (F12)", fontSize = 18.sp) },
+                    title = { Text("Radar bắt link Tự Động", fontSize = 18.sp) },
                     navigationIcon = {
                         IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                     },
@@ -71,7 +77,7 @@ fun BrowserScreen(
                     onValueChange = { currentUrl = it },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     singleLine = true,
-                    placeholder = { Text("Nhập link web...") },
+                    placeholder = { Text("Nhập link phim...") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
                         onGo = {
@@ -95,17 +101,26 @@ fun BrowserScreen(
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
-                    
                     settings.setSupportMultipleWindows(true)
                     settings.javaScriptCanOpenWindowsAutomatically = true
                     
-                    // Thiết lập Cookie toàn cục
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(this, true)
                     
                     val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
                     settings.userAgentString = chromeUserAgent
+
+                    // Cầu nối giao tiếp giữa JavaScript (Web) và Kotlin (App)
+                    addJavascriptInterface(object {
+                        @JavascriptInterface
+                        fun onVideoFound(url: String) {
+                            CoroutineScope(Dispatchers.Main).launch {
+                                Toast.makeText(context, "BẮT ĐƯỢC LINK VIP!", Toast.LENGTH_SHORT).show()
+                                onLinkCaught(url) // Trả link về giao diện tải
+                            }
+                        }
+                    }, "AndroidSniffer")
                     
                     webChromeClient = object : WebChromeClient() {
                         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
@@ -117,20 +132,15 @@ fun BrowserScreen(
                                 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onCloseWindow(window: WebView?) {
-                                        // ÉP LƯU COOKIE NGAY LẬP TỨC TRƯỚC KHI ĐÓNG POPUP
                                         cookieManager.flush() 
                                         popupWebView = null 
-                                        webViewRef?.reload() // Tải lại web chính
+                                        webViewRef?.reload() 
                                     }
                                 }
                                 webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
-                                        return false
-                                    }
+                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean { return false }
                                     override fun onPageFinished(view: WebView, url: String) {
-                                        // Đóng popup nếu hoàn thành chu trình login
                                         if (url.contains("gsi/transform") || url.contains("close") || url.contains("google.com/search")) {
-                                            // ÉP LƯU COOKIE 
                                             cookieManager.flush()
                                             popupWebView = null
                                             webViewRef?.reload()
@@ -151,42 +161,75 @@ fun BrowserScreen(
                             super.onPageFinished(view, url)
                             currentUrl = url 
                             
-                            val injectEruda = """
-                                javascript:(function () { 
-                                    if (window.eruda) return;
-                                    var script = document.createElement('script'); 
-                                    script.src = 'https://cdn.jsdelivr.net/npm/eruda'; 
-                                    document.body.appendChild(script); 
-                                    script.onload = function () { 
-                                        eruda.init(); 
-                                    } 
+                            // ĐOẠN SCRIPT RADAR: Cài cắm vào Fetch và XHR để nghe lén API lấy link
+                            val injectSniffer = """
+                                javascript:(function() {
+                                    if (window.hasInjectedSniffer) return;
+                                    window.hasInjectedSniffer = true;
+
+                                    function sendToAndroid(videoUrl) {
+                                        if(window.AndroidSniffer && videoUrl) {
+                                            window.AndroidSniffer.onVideoFound(videoUrl);
+                                        }
+                                    }
+
+                                    function extractLink(text) {
+                                        const unescaped = text.replace(/\\/g, '');
+                                        const match = unescaped.match(/(https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)/i);
+                                        if (match) sendToAndroid(match[1]);
+                                    }
+
+                                    // Nghe lén Fetch API
+                                    const originalFetch = window.fetch;
+                                    window.fetch = async function() {
+                                        const response = await originalFetch.apply(this, arguments);
+                                        const clone = response.clone();
+                                        const reqUrl = response.url || '';
+                                        
+                                        if (reqUrl.includes('.m3u8') || reqUrl.includes('.mp4')) {
+                                            sendToAndroid(reqUrl);
+                                        } else if (reqUrl.includes('episode_info') || reqUrl.includes('play_url')) {
+                                            clone.text().then(text => extractLink(text)).catch(e => {});
+                                        }
+                                        return response;
+                                    };
+
+                                    // Nghe lén XMLHttpRequest
+                                    const originalXhrOpen = XMLHttpRequest.prototype.open;
+                                    XMLHttpRequest.prototype.open = function(method, reqUrl) {
+                                        this.addEventListener('load', function() {
+                                            if (typeof reqUrl === 'string') {
+                                                if (reqUrl.includes('.m3u8') || reqUrl.includes('.mp4')) {
+                                                    sendToAndroid(reqUrl);
+                                                } else if (reqUrl.includes('episode_info') || reqUrl.includes('play_url')) {
+                                                    try { extractLink(this.responseText); } catch(e) {}
+                                                }
+                                            }
+                                        });
+                                        originalXhrOpen.apply(this, arguments);
+                                    };
                                 })();
                             """.trimIndent()
-                            view.evaluateJavascript(injectEruda, null)
+                            view.evaluateJavascript(injectSniffer, null)
                         }
                     }
                     
                     loadUrl(currentUrl)
                 }
             },
-            update = { webView ->
-                webViewRef = webView
-            }
+            update = { webView -> webViewRef = webView }
         )
         
         if (popupWebView != null) {
             Dialog(
                 onDismissRequest = { 
-                    CookieManager.getInstance().flush() // Ép lưu Cookie nếu người dùng chủ động ấn ra ngoài để đóng
+                    CookieManager.getInstance().flush()
                     popupWebView = null 
                     webViewRef?.reload()
                 },
                 properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
-                Surface(
-                    modifier = Modifier.fillMaxSize(), 
-                    color = MaterialTheme.colorScheme.background
-                ) {
+                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         TopAppBar(
                             title = { Text("Đăng nhập an toàn", fontSize = 16.sp) },
@@ -195,15 +238,10 @@ fun BrowserScreen(
                                     CookieManager.getInstance().flush()
                                     popupWebView = null
                                     webViewRef?.reload()
-                                }) {
-                                    Icon(Icons.Default.Close, contentDescription = "Đóng")
-                                }
+                                }) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                             }
                         )
-                        AndroidView(
-                            factory = { popupWebView!! },
-                            modifier = Modifier.fillMaxSize()
-                        )
+                        AndroidView(factory = { popupWebView!! }, modifier = Modifier.fillMaxSize())
                     }
                 }
             }
