@@ -242,8 +242,6 @@ fun BrowserScreen(
                                 isUserGesture: Boolean,
                                 resultMsg: Message
                             ): Boolean {
-                                if (!isUserGesture) return false
-
                                 val popup = WebView(context).apply {
                                     settings.javaScriptEnabled = true
                                     settings.domStorageEnabled = true
