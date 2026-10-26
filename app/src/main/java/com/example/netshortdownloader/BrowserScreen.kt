@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.os.Message
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.compose.foundation.layout.*
@@ -23,6 +24,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 @SuppressLint("SetJavaScriptEnabled")
 @OptIn(ExperimentalMaterial3Api::class)
@@ -34,6 +37,9 @@ fun BrowserScreen(
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
+    
+    // Biến trạng thái để hiển thị cửa sổ Popup khi Google yêu cầu
+    var popupWebView by remember { mutableStateOf<WebView?>(null) }
 
     Scaffold(
         topBar = {
@@ -44,7 +50,6 @@ fun BrowserScreen(
                         IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                     },
                     actions = {
-                        // Nút Home (Trang chủ) - Cứu cánh khi bị kẹt trang trắng
                         IconButton(onClick = { webViewRef?.loadUrl("https://google.com") }) {
                             Icon(Icons.Default.Home, contentDescription = "Trang chủ")
                         }
@@ -97,7 +102,6 @@ fun BrowserScreen(
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
                     
-                    // Cấp phép cho WebView mở đa cửa sổ (Popup) y như Chrome
                     settings.setSupportMultipleWindows(true)
                     settings.javaScriptCanOpenWindowsAutomatically = true
                     
@@ -108,20 +112,36 @@ fun BrowserScreen(
                     settings.userAgentString = chromeUserAgent
                     
                     webChromeClient = object : WebChromeClient() {
-                        // Xử lý luồng mở Tab mới của Google Login
                         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
+                            // Khi web yêu cầu mở popup, tạo WebView mới
                             val newWebView = WebView(context).apply {
                                 settings.javaScriptEnabled = true
+                                settings.domStorageEnabled = true
                                 settings.userAgentString = chromeUserAgent
+                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                
+                                webChromeClient = object : WebChromeClient() {
+                                    override fun onCloseWindow(window: WebView?) {
+                                        // Đóng popup khi Google gửi lệnh đóng
+                                        popupWebView = null 
+                                    }
+                                }
                                 webViewClient = object : WebViewClient() {
+                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                        return false
+                                    }
                                     override fun onPageFinished(view: WebView, url: String) {
-                                        // Nếu popup đi đến trang transform, tự động đóng nó lại và tải lại web chính
+                                        // Tự động đóng nếu lọt vào trang trắng cuối cùng của Google
                                         if (url.contains("gsi/transform") || url.contains("close")) {
-                                            webViewRef?.loadUrl("https://google.com")
+                                            popupWebView = null
+                                            webViewRef?.reload() // Tải lại trang gốc để nhận diện đã đăng nhập
                                         }
                                     }
                                 }
                             }
+                            // Kích hoạt giao diện popup
+                            popupWebView = newWebView
+                            
                             val transport = resultMsg?.obj as WebView.WebViewTransport
                             transport.webView = newWebView
                             resultMsg.sendToTarget()
@@ -133,12 +153,6 @@ fun BrowserScreen(
                         override fun onPageFinished(view: WebView, url: String) {
                             super.onPageFinished(view, url)
                             currentUrl = url 
-                            
-                            // Cơ chế tự động bẻ lái dự phòng
-                            if (url.contains("gsi/transform")) {
-                                loadUrl("https://google.com")
-                                return
-                            }
                             
                             val injectEruda = """
                                 javascript:(function () { 
@@ -162,5 +176,33 @@ fun BrowserScreen(
                 webViewRef = webView
             }
         )
+        
+        // GIAO DIỆN HIỂN THỊ CỬA SỔ POPUP
+        if (popupWebView != null) {
+            Dialog(
+                onDismissRequest = { popupWebView = null }, // Bấm ra ngoài để đóng
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(), 
+                    color = MaterialTheme.colorScheme.background
+                ) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        TopAppBar(
+                            title = { Text("Đăng nhập an toàn", fontSize = 16.sp) },
+                            navigationIcon = {
+                                IconButton(onClick = { popupWebView = null }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Đóng")
+                                }
+                            }
+                        )
+                        AndroidView(
+                            factory = { popupWebView!! },
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    }
+                }
+            }
+        }
     }
 }
