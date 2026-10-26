@@ -1,142 +1,244 @@
 package com.example.netshortdownloader
 
+import android.content.ContentValues
 import android.content.Context
+import android.net.Uri
+import android.os.Build
 import android.os.Environment
-import android.widget.Toast
+import android.provider.MediaStore
+import android.webkit.CookieManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
+import java.util.Locale
+import java.util.concurrent.TimeUnit
 
 class DownloadHelper(private val context: Context) {
-    private val client = OkHttpClient()
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(20, TimeUnit.SECONDS)
+        .readTimeout(60, TimeUnit.SECONDS)
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
 
-    suspend fun extractAndDownload(
-        shareUrl: String, 
-        vipCookie: String,
+    suspend fun downloadDirectVideo(
+        mediaUrl: String,
+        referer: String,
         onProgress: (status: String, percent: Int) -> Unit
     ) {
-        withContext(Dispatchers.Main) {
-            onProgress("Đang bóc tách link phim...", 0)
-        }
-
         withContext(Dispatchers.IO) {
+            var savedUri: Uri? = null
+            var pendingFile: File? = null
             try {
-                // 1. Gọi request kèm Cookie VIP để lấy mã nguồn trang web
-                val request = Request.Builder()
-                    .url(shareUrl)
-                    .addHeader("Cookie", vipCookie)
-                    .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36")
-                    .build()
+                val uri = Uri.parse(mediaUrl.trim())
+                require(uri.scheme == "https" && uri.host != null && uri.userInfo == null) {
+                    "Chỉ hỗ trợ link HTTPS hợp lệ."
+                }
+                val path = uri.path.orEmpty().lowercase(Locale.ROOT)
+                val fromNetShort = isNetShortReferer(referer)
+                val host = uri.host.orEmpty().lowercase(Locale.ROOT)
+                require(host == "netshort.com" || host.endsWith(".netshort.com") || fromNetShort) {
+                    "Chỉ tải link được phát hiện từ NetShort hoặc CDN của trang NetShort."
+                }
+                require(!path.endsWith(".m3u8")) {
+                    "Đây là playlist HLS, không phải file video trực tiếp. HLS/DRM không được giải mã hoặc ghép bởi ứng dụng này."
+                }
+                val hasVideoExtension = listOf(".mp4", ".m4v", ".webm", ".mov").any(path::endsWith)
+                require(hasVideoExtension || fromNetShort) {
+                    "Link không trỏ tới file video trực tiếp được hỗ trợ. Hãy mở video trong môi trường NetShort và chọn link media đã phát hiện."
+                }
 
-                val response = client.newCall(request).execute()
-                val responseBody = response.body?.string() ?: ""
-
-                // 2. Bóc tách tất cả các link video tìm được trong trang
-                val videoUrls = parseAllVideoUrls(responseBody)
-
-                if (videoUrls.isEmpty()) {
-                    // Nếu không tìm thấy link ẩn, tải trực tiếp link gốc
-                    withContext(Dispatchers.Main) {
-                        onProgress("Không tìm thấy link ẩn, đang tải link gốc...", 10)
+                withContext(Dispatchers.Main) { onProgress("Đang kết nối tới video…", 0) }
+                executeFollowingSafeRedirects(uri.toString(), referer).use { response ->
+                    if (!response.isSuccessful) throw IllegalStateException("Máy chủ trả về HTTP ${response.code}.")
+                    val body = response.body ?: throw IllegalStateException("Máy chủ không trả dữ liệu video.")
+                    val contentType = body.contentType()?.toString()?.substringBefore(';')?.lowercase(Locale.ROOT).orEmpty()
+                    if (contentType.contains("mpegurl") || contentType == "application/x-mpegurl") {
+                        throw IllegalStateException("Máy chủ trả về playlist HLS, không phải file video trực tiếp.")
                     }
-                    downloadFile(shareUrl, vipCookie, "Netshort_Video_${System.currentTimeMillis()}.mp4", onProgress)
-                } else {
-                    // Hiện số file bóc tách được
-                    val totalFiles = videoUrls.size
-                    withContext(Dispatchers.Main) {
-                        onProgress("Đã bóc tách thành công $totalFiles file video!", 5)
+                    if (contentType == "text/html" || contentType.startsWith("text/") || contentType.contains("json")) {
+                        throw IllegalStateException("Máy chủ trả về trang web/API thay vì video. Hãy bắt link media đang phát trong WebView.")
+                    }
+                    val supportedVideoTypes = setOf("video/mp4", "video/webm", "video/quicktime", "video/x-m4v")
+                    val isKnownVideo = contentType in supportedVideoTypes
+                    val isOctetStreamWithExtension = contentType == "application/octet-stream" && hasVideoExtension
+                    if (contentType.isNotBlank() && !isKnownVideo && !isOctetStreamWithExtension) {
+                        throw IllegalStateException("Kiểu nội dung không phải video: $contentType")
+                    }
+                    if (contentType.isBlank() && !hasVideoExtension) {
+                        throw IllegalStateException("Máy chủ không gửi MIME video cho link không có phần mở rộng.")
                     }
 
-                    // Tiến hành tải từng file và cộng dồn tiến trình
-                    for ((index, url) in videoUrls.withIndex()) {
-                        val fileName = "Netshort_Ep_${index + 1}_${System.currentTimeMillis()}.mp4"
-                        
-                        downloadFile(url, vipCookie, fileName) { status, subPercent ->
-                            // Tính phần trăm tổng thể dựa trên số file
-                            val overallPercent = ((index * 100) + subPercent) / totalFiles
-                            val fileInfo = "Đang tải file ${index + 1}/$totalFiles ($subPercent%)"
-                            
-                            kotlinx.coroutines.runBlocking(Dispatchers.Main) {
-                                onProgress(fileInfo, overallPercent)
+                    val extension = when {
+                        contentType == "video/mp4" -> "mp4"
+                        contentType.contains("webm") -> "webm"
+                        contentType.contains("quicktime") -> "mov"
+                        contentType == "video/x-m4v" -> "m4v"
+                        else -> path.substringAfterLast('.', "mp4").substringBefore('?').takeIf { it in setOf("mp4", "m4v", "webm", "mov") } ?: "mp4"
+                    }
+                    val mimeType = when (extension) {
+                        "webm" -> "video/webm"
+                        "mov" -> "video/quicktime"
+                        else -> "video/mp4"
+                    }
+                    val fileName = "NetShort_${System.currentTimeMillis()}.$extension"
+                    val expectedLength = body.contentLength()
+                    if (expectedLength > 8L * 1024L * 1024L * 1024L) {
+                        throw IllegalStateException("File vượt quá giới hạn 8 GiB.")
+                    }
+                    val output = createOutput(fileName, mimeType)
+                    savedUri = output.first
+                    pendingFile = output.third
+
+                    output.second.use { stream ->
+                        val input = body.byteStream()
+                        val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                        val signature = ByteArray(12)
+                        var signatureLength = 0
+                        var copied = 0L
+                        var lastPercent = -1
+                        input.use { source ->
+                            while (true) {
+                                val count = source.read(buffer)
+                                if (count < 0) break
+                                stream.write(buffer, 0, count)
+                                if (signatureLength < signature.size) {
+                                    val signatureCount = minOf(count, signature.size - signatureLength)
+                                    buffer.copyInto(signature, signatureLength, 0, signatureCount)
+                                    signatureLength += signatureCount
+                                }
+                                copied += count
+                                val length = expectedLength
+                                if (length > 0) {
+                                    val percent = ((copied * 100L) / length).toInt().coerceIn(0, 100)
+                                    if (percent != lastPercent) {
+                                        lastPercent = percent
+                                        withContext(Dispatchers.Main) {
+                                            onProgress("Đang tải $fileName", percent)
+                                        }
+                                    }
+                                }
                             }
+                            stream.flush()
                         }
+                        if (copied == 0L) throw IllegalStateException("File video nhận được đang rỗng.")
+                        if (expectedLength > 0 && copied != expectedLength) {
+                            throw IllegalStateException("Tải chưa hoàn tất: nhận $copied/$expectedLength byte.")
+                        }
+                        val container = if (signatureLength >= 8) {
+                            String(signature.copyOfRange(4, 8), Charsets.US_ASCII)
+                        } else ""
+                        val isWebm = signatureLength >= 4 &&
+                            signature[0] == 0x1A.toByte() && signature[1] == 0x45.toByte() &&
+                            signature[2] == 0xDF.toByte() && signature[3] == 0xA3.toByte()
+                        val validContainer = if (extension == "webm") isWebm else container == "ftyp"
+                        if (!validContainer) throw IllegalStateException("Dữ liệu tải xuống không có chữ ký container video hợp lệ.")
                     }
-
+                    finishOutput(savedUri)
+                    val destination = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        "Downloads/NetShort"
+                    } else {
+                        "Android/data/${context.packageName}/files/Download"
+                    }
                     withContext(Dispatchers.Main) {
-                        onProgress("Tải hoàn tất tất cả $totalFiles file!", 100)
-                        Toast.makeText(context, "Đã tải xong $totalFiles file về thư mục Download!", Toast.LENGTH_LONG).show()
+                        onProgress("Đã lưu $fileName trong $destination", 100)
                     }
                 }
-
-            } catch (e: Exception) {
-                e.printStackTrace()
-                withContext(Dispatchers.Main) {
-                    onProgress("Lỗi: ${e.message}", 0)
-                    Toast.makeText(context, "Lỗi: ${e.message}", Toast.LENGTH_LONG).show()
-                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                savedUri?.let { runCatching { context.contentResolver.delete(it, null, null) } }
+                pendingFile?.let { runCatching { it.delete() } }
+                val message = error.message ?: "Lỗi tải video không xác định."
+                withContext(Dispatchers.Main) { onProgress("Không tải được: $message", 0) }
             }
         }
     }
 
-    private fun parseAllVideoUrls(sourceCode: String): List<String> {
-        val urls = mutableSetOf<String>()
-        // Quét tất cả các link .mp4 và .m3u8 có trong mã nguồn
-        val regexMp4 = """(https?://[^\s"']+?\.mp4)""".toRegex()
-        regexMp4.findAll(sourceCode).forEach { match ->
-            urls.add(match.value)
+    /** Returns (content URI, output stream, legacy file if one was created). */
+    private fun createOutput(fileName: String, mimeType: String): Triple<Uri?, OutputStream, File?> {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val values = ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, fileName)
+                put(MediaStore.MediaColumns.MIME_TYPE, mimeType)
+                put(MediaStore.MediaColumns.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/NetShort")
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+            val uri = context.contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: throw IllegalStateException("Không tạo được file trong thư mục Downloads.")
+            val stream = try {
+                context.contentResolver.openOutputStream(uri, "w")
+            } catch (error: Exception) {
+                context.contentResolver.delete(uri, null, null)
+                throw error
+            } ?: run {
+                context.contentResolver.delete(uri, null, null)
+                throw IllegalStateException("Không mở được file đích.")
+            }
+            Triple(uri, stream, null)
+        } else {
+            val directory = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+                ?: throw IllegalStateException("Bộ nhớ ngoài không khả dụng.")
+            if (!directory.exists() && !directory.mkdirs()) {
+                throw IllegalStateException("Không tạo được thư mục tải xuống.")
+            }
+            val file = File(directory, fileName)
+            Triple(null, FileOutputStream(file), file)
         }
-        val regexM3u8 = """(https?://[^\s"']+?\.m3u8)""".toRegex()
-        regexM3u8.findAll(sourceCode).forEach { match ->
-            urls.add(match.value)
-        }
-        return urls.toList()
     }
 
-    private suspend fun downloadFile(
-        url: String, 
-        cookie: String, 
-        fileName: String,
-        onProgress: (status: String, percent: Int) -> Unit
-    ) {
-        val request = Request.Builder()
-            .url(url)
-            .addHeader("Cookie", cookie)
-            .addHeader("User-Agent", "Mozilla/5.0 (Linux; Android 10) AppleWebKit/537.36")
-            .build()
-
-        val response = client.newCall(request).execute()
-        val body = response.body ?: throw Exception("Phản hồi trống từ server")
-        val contentLength = body.contentLength()
-
-        val downloadsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
-        if (!downloadsDir.exists()) downloadsDir.mkdirs()
-        val file = File(downloadsDir, fileName)
-
-        body.byteStream().use { inputStream ->
-            FileOutputStream(file).use { outputStream ->
-                val buffer = ByteArray(8 * 1024)
-                var bytesRead: Long = 0
-                var read: Int
-                var lastPercent = 0
-
-                while (inputStream.read(buffer).also { read = it } != -1) {
-                    outputStream.write(buffer, 0, read)
-                    bytesRead += read
-                    if (contentLength > 0) {
-                        val percent = ((bytesRead * 100) / contentLength).toInt()
-                        if (percent != lastPercent) {
-                            lastPercent = percent
-                            withContext(Dispatchers.Main) {
-                                onProgress("Đang tải...", percent)
-                            }
-                        }
-                    }
-                }
-                outputStream.flush()
+    private fun finishOutput(uri: Uri?) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && uri != null) {
+            val values = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
+            if (context.contentResolver.update(uri, values, null, null) == 0) {
+                throw IllegalStateException("Không thể công bố file trong Downloads.")
             }
         }
+    }
+
+    private fun executeFollowingSafeRedirects(startUrl: String, referer: String): okhttp3.Response {
+        val initialHost = Uri.parse(startUrl).host
+        var currentUrl = startUrl
+        var redirects = 0
+        while (true) {
+            val requestBuilder = Request.Builder()
+                .url(currentUrl)
+                .header("Accept", "video/*, application/octet-stream;q=0.9, */*;q=0.5")
+            val cookie = CookieManager.getInstance().getCookie(currentUrl)
+            if (!cookie.isNullOrBlank()) requestBuilder.header("Cookie", cookie)
+            if (isNetShortReferer(referer) && Uri.parse(currentUrl).host == initialHost) {
+                requestBuilder.header("Referer", referer)
+            }
+
+            val response = client.newCall(requestBuilder.build()).execute()
+            if (!response.isRedirect) return response
+            if (redirects >= 5) {
+                response.close()
+                throw IllegalStateException("Máy chủ chuyển hướng quá 5 lần.")
+            }
+            val nextUrl = response.header("Location")?.let { response.request.url.resolve(it) }
+            if (nextUrl == null || !nextUrl.isHttps || nextUrl.username.isNotEmpty() || nextUrl.password.isNotEmpty()) {
+                response.close()
+                throw IllegalStateException("Chuyển hướng không hợp lệ hoặc không dùng HTTPS.")
+            }
+            val previousHost = response.request.url.host
+            if (nextUrl.host != previousHost && !isNetShortReferer(referer)) {
+                response.close()
+                throw IllegalStateException("Chặn chuyển hướng sang host khác khi không có trang NetShort tham chiếu.")
+            }
+            response.close()
+            currentUrl = nextUrl.toString()
+            redirects += 1
+        }
+    }
+
+    private fun isNetShortReferer(value: String): Boolean {
+        val uri = runCatching { Uri.parse(value) }.getOrNull() ?: return false
+        val host = uri.host?.lowercase(Locale.ROOT) ?: return false
+        return uri.scheme == "https" && (host == "netshort.com" || host.endsWith(".netshort.com"))
     }
 }
