@@ -37,8 +37,6 @@ fun BrowserScreen(
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
     var webViewRef by remember { mutableStateOf<WebView?>(null) }
-    
-    // Biến trạng thái để hiển thị cửa sổ Popup khi Google yêu cầu
     var popupWebView by remember { mutableStateOf<WebView?>(null) }
 
     Scaffold(
@@ -71,9 +69,7 @@ fun BrowserScreen(
                 OutlinedTextField(
                     value = currentUrl,
                     onValueChange = { currentUrl = it },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     singleLine = true,
                     placeholder = { Text("Nhập link web...") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
@@ -92,9 +88,7 @@ fun BrowserScreen(
         }
     ) { paddingValues ->
         AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues),
+            modifier = Modifier.fillMaxSize().padding(paddingValues),
             factory = {
                 WebView(context).apply {
                     webViewRef = this
@@ -105,25 +99,28 @@ fun BrowserScreen(
                     settings.setSupportMultipleWindows(true)
                     settings.javaScriptCanOpenWindowsAutomatically = true
                     
-                    CookieManager.getInstance().setAcceptCookie(true)
-                    CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                    // Thiết lập Cookie toàn cục
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
                     
                     val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
                     settings.userAgentString = chromeUserAgent
                     
                     webChromeClient = object : WebChromeClient() {
                         override fun onCreateWindow(view: WebView?, isDialog: Boolean, isUserGesture: Boolean, resultMsg: Message?): Boolean {
-                            // Khi web yêu cầu mở popup, tạo WebView mới
                             val newWebView = WebView(context).apply {
                                 settings.javaScriptEnabled = true
                                 settings.domStorageEnabled = true
                                 settings.userAgentString = chromeUserAgent
-                                CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                                cookieManager.setAcceptThirdPartyCookies(this, true)
                                 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onCloseWindow(window: WebView?) {
-                                        // Đóng popup khi Google gửi lệnh đóng
+                                        // ÉP LƯU COOKIE NGAY LẬP TỨC TRƯỚC KHI ĐÓNG POPUP
+                                        cookieManager.flush() 
                                         popupWebView = null 
+                                        webViewRef?.reload() // Tải lại web chính
                                     }
                                 }
                                 webViewClient = object : WebViewClient() {
@@ -131,17 +128,17 @@ fun BrowserScreen(
                                         return false
                                     }
                                     override fun onPageFinished(view: WebView, url: String) {
-                                        // Tự động đóng nếu lọt vào trang trắng cuối cùng của Google
-                                        if (url.contains("gsi/transform") || url.contains("close")) {
+                                        // Đóng popup nếu hoàn thành chu trình login
+                                        if (url.contains("gsi/transform") || url.contains("close") || url.contains("google.com/search")) {
+                                            // ÉP LƯU COOKIE 
+                                            cookieManager.flush()
                                             popupWebView = null
-                                            webViewRef?.reload() // Tải lại trang gốc để nhận diện đã đăng nhập
+                                            webViewRef?.reload()
                                         }
                                     }
                                 }
                             }
-                            // Kích hoạt giao diện popup
                             popupWebView = newWebView
-                            
                             val transport = resultMsg?.obj as WebView.WebViewTransport
                             transport.webView = newWebView
                             resultMsg.sendToTarget()
@@ -177,10 +174,13 @@ fun BrowserScreen(
             }
         )
         
-        // GIAO DIỆN HIỂN THỊ CỬA SỔ POPUP
         if (popupWebView != null) {
             Dialog(
-                onDismissRequest = { popupWebView = null }, // Bấm ra ngoài để đóng
+                onDismissRequest = { 
+                    CookieManager.getInstance().flush() // Ép lưu Cookie nếu người dùng chủ động ấn ra ngoài để đóng
+                    popupWebView = null 
+                    webViewRef?.reload()
+                },
                 properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
                 Surface(
@@ -191,7 +191,11 @@ fun BrowserScreen(
                         TopAppBar(
                             title = { Text("Đăng nhập an toàn", fontSize = 16.sp) },
                             navigationIcon = {
-                                IconButton(onClick = { popupWebView = null }) {
+                                IconButton(onClick = { 
+                                    CookieManager.getInstance().flush()
+                                    popupWebView = null
+                                    webViewRef?.reload()
+                                }) {
                                     Icon(Icons.Default.Close, contentDescription = "Đóng")
                                 }
                             }
