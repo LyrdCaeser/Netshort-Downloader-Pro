@@ -1,6 +1,9 @@
 package com.example.netshortdownloader
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -267,6 +270,7 @@ fun BrowserScreen(
                                             request: WebResourceRequest?
                                         ): Boolean {
                                             val url = request?.url?.toString() ?: return true
+                                            if (openExternalNavigation(context, url)) return true
                                             return !isAllowedNetShortNavigation(url)
                                         }
                                     }
@@ -298,6 +302,7 @@ fun BrowserScreen(
 
                             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                                 val url = request?.url?.toString() ?: return true
+                                if (openExternalNavigation(context, url)) return true
                                 return !isAllowedNetShortNavigation(url)
                             }
 
@@ -463,6 +468,47 @@ private fun isAllowedNetShortNavigation(url: String): Boolean {
         "www.facebook.com",
         "m.facebook.com"
     )
+}
+
+/**
+ * Lets Android handle app links and intent:// URLs just as a normal browser does.
+ * HTTP(S) navigation remains governed by the WebView allowlist and returns false.
+ */
+private fun openExternalNavigation(context: Context, rawUrl: String): Boolean {
+    val uri = runCatching { Uri.parse(rawUrl) }.getOrNull() ?: return true
+    val scheme = uri.scheme?.lowercase().orEmpty()
+    if (scheme == "http" || scheme == "https" || scheme.isBlank()) return false
+
+    val intent = runCatching {
+        if (scheme == "intent") {
+            Intent.parseUri(rawUrl, Intent.URI_INTENT_SCHEME)
+        } else {
+            Intent(Intent.ACTION_VIEW, uri)
+        }
+    }.getOrNull() ?: run {
+        Toast.makeText(context, "Liên kết ứng dụng không hợp lệ.", Toast.LENGTH_SHORT).show()
+        return true
+    }
+
+    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    return try {
+        context.startActivity(intent)
+        true
+    } catch (_: ActivityNotFoundException) {
+        val fallback = intent.getStringExtra("browser_fallback_url")
+        if (!fallback.isNullOrBlank()) {
+            runCatching {
+                context.startActivity(
+                    Intent(Intent.ACTION_VIEW, Uri.parse(fallback)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                )
+            }.onFailure {
+                Toast.makeText(context, "Không tìm thấy ứng dụng để mở liên kết tập.", Toast.LENGTH_LONG).show()
+            }
+        } else {
+            Toast.makeText(context, "Cần mở liên kết này bằng ứng dụng NetShort.", Toast.LENGTH_LONG).show()
+        }
+        true
+    }
 }
 
 private fun installMediaCapture(view: WebView, title: String) {
