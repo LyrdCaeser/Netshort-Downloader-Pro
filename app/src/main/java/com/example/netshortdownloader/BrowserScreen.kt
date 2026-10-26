@@ -38,7 +38,7 @@ import kotlinx.coroutines.launch
 fun BrowserScreen(
     initialUrl: String,
     onBack: () -> Unit,
-    onLinkCaught: (String) -> Unit
+    onLinkCaught: (String) -> Unit // Callback trả link bắt được về màn hình chính
 ) {
     val context = LocalContext.current
     var currentUrl by remember { mutableStateOf(if (initialUrl.isNotEmpty()) initialUrl else "https://google.com") }
@@ -49,7 +49,7 @@ fun BrowserScreen(
         topBar = {
             Column {
                 TopAppBar(
-                    title = { Text("Radar Tự Động & F12", fontSize = 18.sp) },
+                    title = { Text("Trình duyệt & Radar bắt link (F12)", fontSize = 18.sp) },
                     navigationIcon = {
                         IconButton(onClick = onBack) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
                     },
@@ -77,7 +77,7 @@ fun BrowserScreen(
                     onValueChange = { currentUrl = it },
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                     singleLine = true,
-                    placeholder = { Text("Nhập link phim...") },
+                    placeholder = { Text("Nhập link web hoặc link phim...") },
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                     keyboardActions = KeyboardActions(
                         onGo = {
@@ -101,10 +101,10 @@ fun BrowserScreen(
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
-                    
                     settings.setSupportMultipleWindows(true)
                     settings.javaScriptCanOpenWindowsAutomatically = true
                     
+                    // Thiết lập Cookie toàn cục
                     val cookieManager = CookieManager.getInstance()
                     cookieManager.setAcceptCookie(true)
                     cookieManager.setAcceptThirdPartyCookies(this, true)
@@ -112,12 +112,13 @@ fun BrowserScreen(
                     val chromeUserAgent = "Mozilla/5.0 (Linux; Android 13; SM-S918B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.193 Mobile Safari/537.36"
                     settings.userAgentString = chromeUserAgent
 
+                    // Cầu nối giao tiếp giữa JavaScript (Web) và Kotlin (App) cho tính năng bắt link
                     addJavascriptInterface(object {
                         @JavascriptInterface
                         fun onVideoFound(url: String) {
                             CoroutineScope(Dispatchers.Main).launch {
                                 Toast.makeText(context, "BẮT ĐƯỢC LINK VIP!", Toast.LENGTH_SHORT).show()
-                                onLinkCaught(url)
+                                onLinkCaught(url) // Trả link về giao diện tải
                             }
                         }
                     }, "AndroidSniffer")
@@ -132,20 +133,20 @@ fun BrowserScreen(
                                 
                                 webChromeClient = object : WebChromeClient() {
                                     override fun onCloseWindow(window: WebView?) {
+                                        // ÉP LƯU COOKIE NGAY LẬP TỨC TRƯỚC KHI ĐÓNG POPUP
                                         cookieManager.flush() 
                                         popupWebView = null 
-                                        webViewRef?.reload() 
+                                        webViewRef?.reload() // Tải lại web chính
                                     }
                                 }
                                 webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean { 
-                                        return false 
+                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
+                                        return false
                                     }
                                     override fun onPageFinished(view: WebView, url: String) {
-                                        // Ép lưu cookie liên tục mỗi khi popup tải xong một bước
-                                        cookieManager.flush()
-                                        // Tự động đóng popup nếu quy trình hoàn tất hoặc bị kẹt
-                                        if (url.contains("gsi/transform") || url.contains("close") || url.contains("netshort.com")) {
+                                        // Đóng popup nếu hoàn thành chu trình login/popup
+                                        if (url.contains("gsi/transform") || url.contains("close") || url.contains("google.com/search")) {
+                                            cookieManager.flush()
                                             popupWebView = null
                                             webViewRef?.reload()
                                         }
@@ -165,17 +166,23 @@ fun BrowserScreen(
                             super.onPageFinished(view, url)
                             currentUrl = url 
                             
-                            val injectScript = """
-                                javascript:(function() {
-                                    // 1. Tiêm F12 (Eruda)
-                                    if (!window.eruda) {
-                                        var script = document.createElement('script'); 
-                                        script.src = 'https://cdn.jsdelivr.net/npm/eruda'; 
-                                        document.body.appendChild(script); 
-                                        script.onload = function () { eruda.init(); }
-                                    }
+                            // 1. Inject Eruda (Bảng điều khiển F12)
+                            val injectEruda = """
+                                javascript:(function () { 
+                                    if (window.eruda) return;
+                                    var script = document.createElement('script'); 
+                                    script.src = 'https://cdn.jsdelivr.net/npm/eruda'; 
+                                    document.body.appendChild(script); 
+                                    script.onload = function () { 
+                                        eruda.init(); 
+                                    } 
+                                })();
+                            """.trimIndent()
+                            view.evaluateJavascript(injectEruda, null)
 
-                                    // 2. Tiêm Radar nghe lén API
+                            // 2. Inject Radar Sniffer (Nghe lén Fetch & XHR để bắt link .mp4 / .m3u8)
+                            val injectSniffer = """
+                                javascript:(function() {
                                     if (window.hasInjectedSniffer) return;
                                     window.hasInjectedSniffer = true;
 
@@ -186,12 +193,12 @@ fun BrowserScreen(
                                     }
 
                                     function extractLink(text) {
-                                        if(!text) return;
                                         const unescaped = text.replace(/\\/g, '');
                                         const match = unescaped.match(/(https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)/i);
                                         if (match) sendToAndroid(match[1]);
                                     }
 
+                                    // Nghe lén Fetch API
                                     const originalFetch = window.fetch;
                                     window.fetch = async function() {
                                         const response = await originalFetch.apply(this, arguments);
@@ -206,6 +213,7 @@ fun BrowserScreen(
                                         return response;
                                     };
 
+                                    // Nghe lén XMLHttpRequest
                                     const originalXhrOpen = XMLHttpRequest.prototype.open;
                                     XMLHttpRequest.prototype.open = function(method, reqUrl) {
                                         this.addEventListener('load', function() {
@@ -221,38 +229,48 @@ fun BrowserScreen(
                                     };
                                 })();
                             """.trimIndent()
-                            view.evaluateJavascript(injectScript, null)
+                            view.evaluateJavascript(injectSniffer, null)
                         }
                     }
                     
                     loadUrl(currentUrl)
                 }
             },
-            update = { webView -> webViewRef = webView }
+            update = { webView ->
+                webViewRef = webView
+            }
         )
         
         if (popupWebView != null) {
             Dialog(
                 onDismissRequest = { 
-                    CookieManager.getInstance().flush()
+                    CookieManager.getInstance().flush() // Ép lưu Cookie nếu người dùng đóng dialog
                     popupWebView = null 
                     webViewRef?.reload()
                 },
                 properties = DialogProperties(usePlatformDefaultWidth = false)
             ) {
-                Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                Surface(
+                    modifier = Modifier.fillMaxSize(), 
+                    color = MaterialTheme.colorScheme.background
+                ) {
                     Column(modifier = Modifier.fillMaxSize()) {
                         TopAppBar(
-                            title = { Text("Đăng nhập an toàn", fontSize = 16.sp) },
+                            title = { Text("Đăng nhập an toàn / Popup", fontSize = 16.sp) },
                             navigationIcon = {
                                 IconButton(onClick = { 
                                     CookieManager.getInstance().flush()
                                     popupWebView = null
                                     webViewRef?.reload()
-                                }) { Icon(Icons.Default.Close, contentDescription = "Đóng") }
+                                }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Đóng")
+                                }
                             }
                         )
-                        AndroidView(factory = { popupWebView!! }, modifier = Modifier.fillMaxSize())
+                        AndroidView(
+                            factory = { popupWebView!! },
+                            modifier = Modifier.fillMaxSize()
+                        )
                     }
                 }
             }
