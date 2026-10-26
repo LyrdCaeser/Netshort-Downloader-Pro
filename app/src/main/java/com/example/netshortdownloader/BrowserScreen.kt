@@ -138,10 +138,14 @@ fun BrowserScreen(
                                     }
                                 }
                                 webViewClient = object : WebViewClient() {
-                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean { return false }
+                                    override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean { 
+                                        return false 
+                                    }
                                     override fun onPageFinished(view: WebView, url: String) {
-                                        if (url.contains("gsi/transform") || url.contains("close") || url.contains("google.com/search")) {
-                                            cookieManager.flush()
+                                        // Ép lưu cookie liên tục mỗi khi popup tải xong một bước
+                                        cookieManager.flush()
+                                        // Tự động đóng popup nếu quy trình hoàn tất hoặc bị kẹt
+                                        if (url.contains("gsi/transform") || url.contains("close") || url.contains("netshort.com")) {
                                             popupWebView = null
                                             webViewRef?.reload()
                                         }
@@ -161,13 +165,6 @@ fun BrowserScreen(
                             super.onPageFinished(view, url)
                             currentUrl = url 
                             
-                            // Phục hồi cơ chế bẻ lái dự phòng Google Login
-                            if (url.contains("gsi/transform") || url.contains("accounts.google.com/gsi")) {
-                                loadUrl("https://google.com")
-                                return
-                            }
-                            
-                            // Gộp cả 2: F12 Eruda + Radar bắt link
                             val injectScript = """
                                 javascript:(function() {
                                     // 1. Tiêm F12 (Eruda)
@@ -189,6 +186,7 @@ fun BrowserScreen(
                                     }
 
                                     function extractLink(text) {
+                                        if(!text) return;
                                         const unescaped = text.replace(/\\/g, '');
                                         const match = unescaped.match(/(https?:\/\/[^"']+\.(?:mp4|m3u8)[^"']*)/i);
                                         if (match) sendToAndroid(match[1]);
